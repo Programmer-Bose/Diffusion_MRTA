@@ -33,7 +33,7 @@ def generate_scenario(R, T, seed=42):
 
     # ---------------- Heterogeneous categories ----------------
     # Payload capacity: 10, 15, 20, 25 kg  <->  Own weight: 5, 7.5, 10, 12.5 kg
-    capacity_options = np.array([10.0, 15.0, 20.0, 25.0])
+    capacity_options = np.array([5.0, 10.0, 20.0, 25.0])
     own_weight_options = np.array([5.0, 7.5, 10.0, 12.5])
 
     cat_idx = rng.integers(0, 4, size=R)
@@ -185,3 +185,4 @@ if __name__ == "__main__":
         # scenario = load_scenario("scenario.json")
 
         plot_scenario(scenario)
+
