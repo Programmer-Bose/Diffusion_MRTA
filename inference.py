@@ -2,7 +2,18 @@ import os
 import torch
 import numpy as np
 import matplotlib
-matplotlib.use("Agg")
+
+try:
+    if os.name == "nt":
+        matplotlib.use("TkAgg", force=True)
+    else:
+        matplotlib.use("TkAgg" if os.environ.get("DISPLAY") is not None else "Agg", force=True)
+except Exception:
+    try:
+        matplotlib.use("QtAgg", force=True)
+    except Exception:
+        matplotlib.use("Agg")
+
 import matplotlib.pyplot as plt
 
 from scenario_utils import load_scenario_file, build_robot_features, build_task_features
@@ -38,6 +49,13 @@ def run_inference(scenario_path, model_checkpoint=None, device="cpu", preference
     print(f"\n==========================================")
     print(f"Loading Scenario: {scenario_path}")
     print(f"==========================================")
+
+    np.random.seed(0)
+    torch.manual_seed(0)
+    if torch.cuda.is_available():
+        torch.cuda.manual_seed_all(0)
+
+    print(f"Matplotlib backend: {plt.get_backend()}")
     
     scenario = load_scenario_file(scenario_path)
     R = scenario["R"]
@@ -79,7 +97,12 @@ def run_inference(scenario_path, model_checkpoint=None, device="cpu", preference
     model.eval()
 
     with torch.no_grad():
-        assign_logits, rank_raw, velocity, alpha, beta = model(robot_feats, task_feats, pref)
+        assign_logits, rank_raw, velocity, alpha, beta = model(
+            robot_feats,
+            task_feats,
+            pref,
+            sample_velocity=False,
+        )
 
     schedule, velocity_out, hard_assign, unassigned = decode_schedule_capacity_aware(
         assign_logits, rank_raw, velocity, task_weight, robot_max_payload
@@ -99,18 +122,18 @@ def run_inference(scenario_path, model_checkpoint=None, device="cpu", preference
     print(f"  Workload Variance: {objectives['workload_variance']:.4f}")
     print(f"  Total Energy (Wh): {objectives['total_energy']:.4f}")
 
-    for r in range(R):
-        print(f"\nRobot {r} (Max Payload: {robot_max_payload[r]} kg):")
-        r_tasks = [(t, schedule[r, t], velocity_out[r, t]) for t in range(T) if schedule[r, t] > 0]
-        r_tasks.sort(key=lambda x: x[1])
+    # for r in range(R):
+    #     print(f"\nRobot {r} (Max Payload: {robot_max_payload[r]} kg):")
+    #     r_tasks = [(t, schedule[r, t], velocity_out[r, t]) for t in range(T) if schedule[r, t] > 0]
+    #     r_tasks.sort(key=lambda x: x[1])
 
-        if not r_tasks:
-            print("  [No tasks assigned]")
-            continue
+    #     if not r_tasks:
+    #         print("  [No tasks assigned]")
+    #         continue
 
-        for seq_idx, (t_id, step, vel) in enumerate(r_tasks, 1):
-            w = task_weight[t_id]
-            print(f"  Step {seq_idx}: Task {t_id} (Weight: {w:.2f} kg) | Travel Velocity to Task: {vel:.2f} m/s")
+    #     for seq_idx, (t_id, step, vel) in enumerate(r_tasks, 1):
+    #         w = task_weight[t_id]
+    #         print(f"  Step {seq_idx}: Task {t_id} (Weight: {w:.2f} kg) | Travel Velocity to Task: {vel:.2f} m/s")
 
     plot_routes(scenario, schedule, velocity_out, hard_assign)
 
@@ -230,17 +253,28 @@ def plot_routes(scenario, schedule, velocity_out, hard_assign):
     ax.grid(True, linestyle="--", alpha=0.5)
     ax.legend(loc="upper right")
     plt.tight_layout()
-    if "agg" in plt.get_backend().lower():
+
+    os.makedirs("plots", exist_ok=True)
+    plot_path = os.path.join("plots", "inference_route_plot.png")
+    fig.savefig(plot_path, dpi=200, bbox_inches="tight")
+    print(f"Saved plot image to: {plot_path}")
+
+    backend = plt.get_backend().lower()
+    if "agg" in backend:
         plt.close(fig)
     else:
-        plt.show()
+        try:
+            plt.show(block=True)
+        except Exception as exc:
+            print(f"Could not open interactive plot window: {exc}")
+            plt.close(fig)
 
 
 if __name__ == "__main__":
     # Example usage: point to any valid scenario json file in your scenarios directory
     sample_scenario = "scenarios/scenario_3_15_1001.json"  # Adjust path/filename as needed
-    checkpoint_path = "checkpoints/model_epoch_100.pt"           # Set to None if you want to test without training weights
-    sample_preference = [0.8, 0.1, 0.1]
+    checkpoint_path = "checkpoints/model_epoch_800.pt"           # Set to None if you want to test without training weights
+    sample_preference = [0.1, 0.1, 0.8]
     
     if os.path.exists(sample_scenario):
         run_inference(
