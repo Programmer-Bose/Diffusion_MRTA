@@ -1,0 +1,40 @@
+{
+    "robot_metadata": {
+        "map_number": 10,
+        "robot_number": 2,
+        "size": [
+            800,
+            800
+        ],
+        "num_obstacles": 2,
+        "num_tasks": 0
+    },
+    "start_position": [
+        385,
+        440
+    ],
+    "goal_position": [
+        377,
+        193
+    ],
+    "task_points": {},
+    "task_sequence": [],
+    "obstacles": [
+        {
+            "type": "circle",
+            "position": [
+                230,
+                316
+            ],
+            "radius": 40
+        },
+        {
+            "type": "circle",
+            "position": [
+                524,
+                291
+            ],
+            "radius": 40
+        }
+    ]
+}

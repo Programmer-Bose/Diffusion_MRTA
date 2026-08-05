@@ -14,15 +14,12 @@ diffusion framework:
      via a zero-init-gated cross-attention pathway, alongside diffusion
      timestep and state conditioning.
 
-UPDATE: added decode_schedule_capacity_aware(), a capacity-respecting
-alternative to decode_schedule(). The original decode_schedule() does a
-per-task-column argmax with NO notion of payload capacity, so even a
-well-trained model can emit a schedule that overloads a robot -- which
-is exactly what caused unrealistic SOC-drop values downstream in
-objectives_and_reward.py / f450_energy2.py. decode_schedule() is kept
-unchanged for backward compatibility; use the capacity-aware version
-whenever task_weight / robot_max_payload are available (i.e. always,
-in this project).
+UPDATE (RL support): added sample_assignment_with_logprob() and exposed
+Beta log_prob for velocity, so train.py can run REINFORCE-style
+weighted-reward RL: loss = -(normalized_reward) * (log_prob_assign +
+log_prob_velocity). Deterministic decode_schedule()/
+decode_schedule_capacity_aware() are UNCHANGED -- use those for eval;
+use the new sampler below during RL training rollouts.
 """
 
 import os
@@ -206,6 +203,61 @@ class ThreeHeadedDenoiser(nn.Module):
 
 
 # ============================================================
+# NEW: Stochastic assignment sampler + log_prob (for REINFORCE RL)
+#
+# Sinkhorn output P (R,T) is column-stochastic (sums to 1 over robots
+# per task). Sampling a robot per task from that column IS a valid
+# categorical action; log_prob is just log(P[chosen_r, t]).
+# This is the piece the old training script was missing entirely --
+# without it there is no valid action/log_prob to attach a reward to.
+# ============================================================
+def sample_assignment_with_logprob(assign_logits, temperature=0.5):
+    """
+    assign_logits: (B,R,T)
+
+    Returns:
+      hard_assign : (B,T) LongTensor, sampled robot index per task
+      log_prob    : (B,)  summed log-prob over all T task-assignment
+                    decisions in that sample (batch-summed per sample,
+                    NOT averaged -- matches REINFORCE convention).
+      P           : (B,R,T) Sinkhorn column-stochastic probabilities
+                    (kept for logging/inspection)
+    """
+    P = sinkhorn_column_normalize(assign_logits, temperature=temperature, dim=-2)  # (B,R,T)
+    B, R, T = P.shape
+
+    # Categorical sample per task column: reshape so multinomial samples
+    # over the robot dimension for every (batch, task) pair at once.
+    P_for_sample = P.permute(0, 2, 1).reshape(B * T, R)          # (B*T, R)
+    sampled = torch.multinomial(P_for_sample, 1).squeeze(-1)      # (B*T,)
+    hard_assign = sampled.view(B, T)                                # (B,T)
+
+    chosen_p = torch.gather(
+        P_for_sample, 1, sampled.unsqueeze(-1)
+    ).squeeze(-1).view(B, T)                                        # (B,T)
+    log_prob = torch.log(chosen_p + 1e-8).sum(dim=1)                # (B,)
+
+    return hard_assign, log_prob, P
+
+
+def velocity_log_prob(alpha, beta, velocity, min_vel, max_vel):
+    """
+    Log-prob of a sampled velocity under its Beta distribution, summed
+    per sample -- second term REINFORCE needs alongside assignment
+    log_prob. Converts velocity back to the underlying (0,1) unit
+    value before scoring under Beta(alpha, beta).
+
+    alpha, beta, velocity: (B,R,T)  (velocity in [min_vel, max_vel])
+    Returns: log_prob (B,) summed over all (r,t) cells.
+    """
+    vel_unit = (velocity - min_vel) / (max_vel - min_vel)
+    vel_unit = vel_unit.clamp(1e-4, 1 - 1e-4)  # numerical safety at Beta support edges
+    beta_dist = torch.distributions.Beta(alpha, beta)
+    lp = beta_dist.log_prob(vel_unit)  # (B,R,T)
+    return lp.sum(dim=(1, 2))          # (B,)
+
+
+# ============================================================
 # Decode (ORIGINAL): assignment (Sinkhorn -> hard argmax per task/column)
 # + rank (only among cells assigned to that robot) -> valid order
 # + velocity read off for each assigned leg
@@ -336,88 +388,3 @@ def decode_schedule_capacity_aware(
             velocity_out[r, t] = velocity[r, t].item()
 
     return schedule, velocity_out, hard_assign, unassigned
-
-
-# ============================================================
-# Quick self-test & Explicit JSON Example Usage
-# ============================================================
-if __name__ == "__main__":
-    torch.manual_seed(0)
-    np.random.seed(0)
-
-    # Import the exact loader instead of the random sampler
-    from scenario_utils import load_scenario_file, build_robot_features, build_task_features
-
-    # Explicitly load the JSON file you provided
-    filepath = "scenarios/scenario_3_15_1002.json"
-
-    if not os.path.exists(filepath):
-        print(f"Error: Could not find '{filepath}'. Ensure the file is in your current working directory.")
-    else:
-        print(f"\n--- Loading Explicit Scenario: {filepath} ---")
-        
-        # Load exactly what you provided
-        scenario = load_scenario_file(filepath)
-        
-        # Output checks confirming data parity
-        print(f"Loaded {scenario['R']} robots and {scenario['T']} tasks.")
-        print(f"Total Network Capacity: {scenario['total_capacity']} kg | Total Demand: {scenario['total_demand']} kg")
-
-        # Generate normalized model input matrices from your explicit file
-        robot_feats_np = build_robot_features(scenario)
-        task_feats_np = build_task_features(scenario)
-
-        # Convert to PyTorch tensors and expand a single batch dimension (B=1)
-        robot_feats = torch.tensor(robot_feats_np, dtype=torch.float32).unsqueeze(0)
-        task_feats = torch.tensor(task_feats_np, dtype=torch.float32).unsqueeze(0)
-
-        R, T = scenario["R"], scenario["T"]
-        robot_feat_dim = robot_feats.shape[-1]
-        task_feat_dim = task_feats.shape[-1]
-        pref_dim = 3
-
-        # Initialize the model structure dynamically to your scenario's dimensions
-        model = ThreeHeadedDenoiser(robot_feat_dim, task_feat_dim,
-                                     max_R=max(20, R), max_T=max(60, T))
-        model.eval()
-
-        # Create a baseline task preference vector
-        pref = torch.tensor([[0.34, 0.33, 0.33]], dtype=torch.float32)
-
-        # 1. Standard Forward Pass Execution Test
-        print("\n--- Running Standard Model Evaluation Pass ---")
-        with torch.no_grad():
-            assign_logits, rank_raw, velocity, alpha, beta = model(robot_feats, task_feats, pref)
-
-        schedule, velocity_out, hard_assign = decode_schedule(assign_logits, rank_raw, velocity)
-
-        print(f"Schedule:\n{schedule}")
-        print(f"Task->Robot assignment: {hard_assign}")
-        print(f"Velocities (assigned legs): {velocity_out[schedule > 0].round(3)}")
-        
-        if len(velocity_out[schedule > 0]) > 0:
-            print(f"Velocity std: {velocity_out[schedule > 0].std():.4f}")
-
-        # 2. Diffusion Step and Dynamic State Conditioned Execution Test
-        print("\n--- Running Diffusion Conditioned Evaluation Pass ---")
-        x_t_dummy = torch.randint(0, R, (1, T))
-        t_dummy = torch.tensor([12.0])
-        with torch.no_grad():
-            assign_logits_d, rank_raw_d, velocity_d, _, _ = model(
-                robot_feats, task_feats, pref, x_t=x_t_dummy, t=t_dummy
-            )
-        print(f"[Diffusion Conditioned] Logits Tensor Map Structure Shape: {assign_logits_d.shape}")
-
-        # 3. Capacity-aware decode demonstration using actual data weights from your JSON
-        print("\n--- Running Capacity-Aware Scheduling Decode Demo ---")
-        task_weight = np.array(scenario["task_weight"], dtype=np.float64)
-        robot_max_payload = np.array(scenario["robot_max_payload"], dtype=np.float64)
-
-        schedule_c, velocity_out_c, hard_assign_c, unassigned = decode_schedule_capacity_aware(
-            assign_logits, rank_raw, velocity, task_weight, robot_max_payload
-        )
-        print(f"[Capacity-aware] Schedule:\n{schedule_c}")
-        print(f"[Capacity-aware] Task->Robot assignment: {hard_assign_c}")
-        print(f"[Capacity-aware] Unassigned tasks (infeasible): {unassigned}")
-        loads = [task_weight[schedule_c[r] > 0].sum() for r in range(R)]
-        print(f"[Capacity-aware] Per-robot load vs capacity: {np.round(loads, 3)} <= {robot_max_payload}")
