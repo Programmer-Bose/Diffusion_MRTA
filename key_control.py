@@ -10,7 +10,7 @@ N_LIDAR = 30
 LIDAR_ANGLE_STEP = 360 / N_LIDAR
 ARENA_HALF_SIZE = 0.85
 ROBOT_SPAWN_HALF_SIZE = 0.5
-OBSTACLE_RADIUS = 0.03
+OBSTACLE_RADIUS = 0.09
 MIN_OBSTACLE_DIST = 0.5
 MAX_EXTRA_DIST = 0.5
 GOAL_MIN_CLEARANCE = 0.2
@@ -111,10 +111,10 @@ while True:
             v, omega = 0.0, ANGULAR_SPEED
         elif key == ord('d'):
             v, omega = 0.0, -ANGULAR_SPEED
-        elif key == ord('w') and key == ord('a'):
-            v, omega = LINEAR_SPEED*0.6, ANGULAR_SPEED
-        elif key == ord('w') and key == ord('d'):
-            v, omega = LINEAR_SPEED*0.6, -ANGULAR_SPEED
+        elif key == ord('w') and key_active('a'):
+            v, omega = LINEAR_SPEED*0.4, ANGULAR_SPEED
+        elif key == ord('w') and key_active('d'):
+            v, omega = LINEAR_SPEED*0.4, -ANGULAR_SPEED
         elif key == ord(' '):
             braking = True
         elif key == 255:                      # no key pressed -> wheels stop immediately
