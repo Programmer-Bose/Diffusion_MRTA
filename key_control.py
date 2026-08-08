@@ -1,19 +1,14 @@
 import mujoco
 import cv2
 import numpy as np
-import random
+import json
 import time
+import os
+import re
 
 # ---------------- Constants ----------------
-N_OBSTACLES = 10
-N_LIDAR = 30
-LIDAR_ANGLE_STEP = 360 / N_LIDAR
-ARENA_HALF_SIZE = 0.85
-ROBOT_SPAWN_HALF_SIZE = 0.5
-OBSTACLE_RADIUS = 0.09
-MIN_OBSTACLE_DIST = 0.5
-MAX_EXTRA_DIST = 0.5
-GOAL_MIN_CLEARANCE = 0.2
+MAX_OBSTACLES = 30
+ARENA_HALF_SIZE = 0.9   # matches the corner markers in mrs-world.xml
 GOAL_REACH_THRESHOLD = 0.1
 
 WHEEL_SEPARATION = 0.105
@@ -23,48 +18,62 @@ RECORD_INTERVAL = 0.25
 steps_per_frame = 16
 KEY_TIMEOUT = 0.15   # key considered "released" if not seen within this window
 
-# ---------------- Spawn logic ----------------
-def clip_to_arena(p, margin=OBSTACLE_RADIUS):
-    return np.clip(p, -ARENA_HALF_SIZE + margin, ARENA_HALF_SIZE - margin)
+MAP_FILE = "all_traj/map_002_robot_1.json"
 
-def reset_episode(model, data, n_obstacles=N_OBSTACLES):
-    robot_xy = np.random.uniform(-ROBOT_SPAWN_HALF_SIZE, ROBOT_SPAWN_HALF_SIZE, size=2)
-    robot_yaw = np.random.uniform(-np.pi, np.pi)
+# ---------------- Coordinate mapping (2D pixel map -> 3D mujoco world) ----------------
+def pixel_to_world(px, py, img_size, arena_half=ARENA_HALF_SIZE):
+    x = (px / img_size[0]) * 2 * arena_half - arena_half
+    y = arena_half - (py / img_size[1]) * 2 * arena_half   # flip: image y grows down, world y grows up
+    return x, y
 
+def radius_to_world(r_px, img_size, arena_half=ARENA_HALF_SIZE):
+    return (r_px / img_size[0]) * 2 * arena_half
+
+def load_map(path):
+    with open(path, "r") as f:
+        m = json.load(f)
+    img_size = m["robot_metadata"]["size"]
+
+    start_x, start_y = pixel_to_world(*m["start_position"], img_size)
+    goal_x, goal_y = pixel_to_world(*m["goal_position"], img_size)
+
+    obstacles = []
+    for obs in m["obstacles"][:MAX_OBSTACLES]:
+        ox, oy = pixel_to_world(*obs["position"], img_size)
+        orad = radius_to_world(obs["radius"], img_size)
+        obstacles.append((ox, oy, orad))
+
+    return (start_x, start_y), (goal_x, goal_y), obstacles
+
+MAP_START, MAP_GOAL, MAP_OBSTACLES = load_map(MAP_FILE)
+
+# ---------------- Episode reset (fixed map, no randomization) ----------------
+def reset_episode(model, data):
     qpos_addr = model.jnt_qposadr[mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_JOINT, "root")]
-    data.qpos[qpos_addr:qpos_addr+3] = [robot_xy[0], robot_xy[1], 0.031]
-    quat = np.array([np.cos(robot_yaw/2), 0, 0, np.sin(robot_yaw/2)])
-    data.qpos[qpos_addr+3:qpos_addr+7] = quat
 
-    candidate_indices = list(range(0, N_LIDAR, 2))
-    chosen_indices = random.sample(candidate_indices, n_obstacles)
-    obstacle_points = []
+    robot_yaw = 0.0
+    data.qpos[qpos_addr:qpos_addr + 3] = [MAP_START[0], MAP_START[1], 0.031]
+    quat = np.array([np.cos(robot_yaw / 2), 0, 0, np.sin(robot_yaw / 2)])
+    data.qpos[qpos_addr + 3:qpos_addr + 7] = quat
 
-    for i, idx in enumerate(chosen_indices):
-        angle = robot_yaw + np.radians(idx * LIDAR_ANGLE_STEP)
-        dist = np.random.uniform(MIN_OBSTACLE_DIST, MIN_OBSTACLE_DIST + MAX_EXTRA_DIST)
-        obs_xy = clip_to_arena(robot_xy + dist * np.array([np.cos(angle), np.sin(angle)]))
-        obstacle_points.append(obs_xy)
+    # Place obstacles from the loaded map; hide any unused slots below the floor.
+    for i in range(MAX_OBSTACLES):
         body_id = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_BODY, f"obstacle_{i}")
-        model.body_pos[body_id][:2] = obs_xy
-        model.body_pos[body_id][2] = 0.05
-
-    goal_xy = None
-    for _ in range(200):
-        candidate = np.random.uniform(-ARENA_HALF_SIZE + 0.05, ARENA_HALF_SIZE - 0.05, size=2)
-        if all(np.linalg.norm(candidate - o) >= (OBSTACLE_RADIUS + GOAL_MIN_CLEARANCE) for o in obstacle_points):
-            goal_xy = candidate
-            break
-    if goal_xy is None:
-        goal_xy = candidate
+        geom_id = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_GEOM, f"obstacle_geom_{i}")
+        if i < len(MAP_OBSTACLES):
+            ox, oy, orad = MAP_OBSTACLES[i]
+            model.body_pos[body_id][:] = [ox, oy, 0.05]
+            model.geom_size[geom_id][0] = orad
+            model.geom_size[geom_id][1] = 0.05
+        else:
+            model.body_pos[body_id][:] = [5, 5, -5]
 
     goal_id = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_BODY, "goal_marker")
-    model.body_pos[goal_id][:2] = goal_xy
-    model.body_pos[goal_id][2] = 0.05
+    model.body_pos[goal_id][:] = [MAP_GOAL[0], MAP_GOAL[1], 0.05]
 
     data.qvel[:] = 0
     mujoco.mj_forward(model, data)
-    return robot_xy, robot_yaw, obstacle_points, goal_xy
+    return MAP_START, robot_yaw, MAP_OBSTACLES, MAP_GOAL
 
 # ---------------- Main setup ----------------
 model = mujoco.MjModel.from_xml_path("mrs-world.xml")
@@ -78,9 +87,8 @@ qpos_addr = model.jnt_qposadr[root_jnt]
 
 print("W/A/S/D: move+steer (combine for curves) | SPACE: brake | Q/ESC: quit")
 
-episode_num = 29
-last_seen = {"w": 0.0, "a": 0.0, "s": 0.0, "d": 0.0}
-braking = False
+episode_num = 1
+last_seen = {"w": 0.0, "a": 0.0, "s": 0.0, "d": 0.0, " ": 0.0}
 
 def key_active(k):
     return (time.time() - last_seen[k]) < KEY_TIMEOUT
@@ -103,27 +111,28 @@ while True:
         if key == 27 or key == ord('q'):
             quit_requested = True
             break
-        elif key == ord('w'):
-            v, omega = LINEAR_SPEED, 0.0
-        elif key == ord('s'):
-            v, omega = -LINEAR_SPEED, 0.0
-        elif key == ord('a'):
-            v, omega = 0.0, ANGULAR_SPEED
-        elif key == ord('d'):
-            v, omega = 0.0, -ANGULAR_SPEED
-        elif key == ord('w') and key_active('a'):
-            v, omega = LINEAR_SPEED*0.4, ANGULAR_SPEED
-        elif key == ord('w') and key_active('d'):
-            v, omega = LINEAR_SPEED*0.4, -ANGULAR_SPEED
-        elif key == ord(' '):
-            braking = True
-        elif key == 255:                      # no key pressed -> wheels stop immediately
+
+        # Update "held" state for every recognized key seen this poll.
+        if key != 255:
+            ch = chr(key) if key < 256 else None
+            if ch in last_seen:
+                last_seen[ch] = now
+
+        # Compute v/omega from held-key state (robust to single-key polling).
+        v, omega = 0.0, 0.0
+        if key_active('w'):
+            v += LINEAR_SPEED*0.1
+        if key_active('s'):
+            v -= LINEAR_SPEED*0.1
+        if key_active('a'):
+            omega += ANGULAR_SPEED*0.3
+        if key_active('d'):
+            omega -= ANGULAR_SPEED*0.3
+        if key_active(' '):
             v, omega = 0.0, 0.0
 
-        if braking:
-            v, omega = 0.0, 0.0
-            if not any(key_active(k) for k in last_seen):
-                braking = False   # release brake once no drive key is held
+        v=np.clip(v, -LINEAR_SPEED, LINEAR_SPEED)
+        omega=np.clip(omega, -ANGULAR_SPEED, ANGULAR_SPEED)
 
         left_ctrl = v - omega * WHEEL_SEPARATION / 2
         right_ctrl = v + omega * WHEEL_SEPARATION / 2
@@ -135,37 +144,43 @@ while True:
             mujoco.mj_step(model, data)
 
         # --- Start recording only once movement begins ---
-        if not recording_started and (abs(left_ctrl) > 1e-6 or abs(right_ctrl) > 1e-6):
+        if not recording_started and (abs(v) > 1e-6 or abs(omega) > 1e-6):
             recording_started = True
             last_record_time = data.time
             print("Movement detected — recording started.")
 
         if recording_started and data.time - last_record_time >= RECORD_INTERVAL:
-            robot_x, robot_y = data.qpos[qpos_addr], data.qpos[qpos_addr+1]
-            quat = data.qpos[qpos_addr+3:qpos_addr+7]
-            yaw = np.arctan2(2*(quat[0]*quat[3]+quat[1]*quat[2]),
-                              1-2*(quat[2]**2+quat[3]**2))
+            robot_x, robot_y = data.qpos[qpos_addr], data.qpos[qpos_addr + 1]
+            quat = data.qpos[qpos_addr + 3:qpos_addr + 7]
+            yaw = np.arctan2(2 * (quat[0] * quat[3] + quat[1] * quat[2]),
+                              1 - 2 * (quat[2] ** 2 + quat[3] ** 2))
 
             episode_log["lidar"].append(data.sensordata.copy())
-            episode_log["action"].append([left_ctrl, right_ctrl])
+            episode_log["action"].append([v, omega])   # linear, angular velocity
             episode_log["pose"].append([robot_x, robot_y, yaw])
             episode_log["timestep"].append(step_idx)
             last_record_time = data.time
             step_idx += 1
 
+            print(f"[rec step {step_idx}] v={v:.4f} m/s  omega={omega:.4f} rad/s")
+
             if np.linalg.norm([robot_x - goal_xy[0], robot_y - goal_xy[1]]) < GOAL_REACH_THRESHOLD:
                 print("Goal reached!")
                 break
 
-        renderer.update_scene(data, camera="overhead_cam")
+        renderer.update_scene(data, camera="tpp_cam")
         pixels = renderer.render()
         frame_bgr = cv2.cvtColor(pixels, cv2.COLOR_RGB2BGR)
-        cv2.putText(frame_bgr, f"Ep {episode_num} | L:{left_ctrl:.3f} R:{right_ctrl:.3f}",
+        cv2.putText(frame_bgr, f"Ep {episode_num} | v:{v:.3f} w:{omega:.3f}",
                     (20, 770), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 200, 0), 2)
         cv2.imshow("Robot Control", frame_bgr)
 
     if len(episode_log["timestep"]) > 0:
-        fname = f"episode_{episode_num}.npz"
+        # derive a map label from MAP_FILE (e.g. map_002_robot_1.json -> map_002)
+        map_basename = os.path.basename(MAP_FILE)
+        m = re.search(r"(map[_-]?\d+)", map_basename)
+        map_label = m.group(1) if m else os.path.splitext(map_basename)[0]
+        fname = f"episodes/{map_label}_epi{episode_num}.npz"
         np.savez(fname,
                  lidar=np.array(episode_log["lidar"]),
                  action=np.array(episode_log["action"]),

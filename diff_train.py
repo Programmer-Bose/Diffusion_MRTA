@@ -42,8 +42,8 @@ BETA_END               = 0.02
 # Training
 BATCH_SIZE             = 64
 LR                     = 1e-4
-EPOCHS                 = 50
-SAVE_EVERY             = 10
+EPOCHS                 = 300
+SAVE_EVERY             = 20
 
 DEVICE                 = "cuda" if __import__("torch").cuda.is_available() else "cpu"
 

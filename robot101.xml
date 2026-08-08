@@ -3,22 +3,28 @@
         <body name="robot1" pos="0 0 0">
             <freejoint name="root"/>
 
+            <camera name="tpp_cam" pos="-0.15 0 0.15" xyaxes="0 -1 0  0.447 0 0.894" fovy="60"/>
             <geom name="chassis_geom" type="box" size="0.0475 0.0475 0.024" pos="0 0 0.031" rgba="0.1 0.5 0.8 1"/>
             <geom name="top_cylinder" type="cylinder" pos="0 0 0.055" size="0.03 0.02" rgba="0.5 0.2 0.2 1"/>
 
             <body name="left_wheel" pos="-0.02 0.0525 0.031">
-                <joint name="left_wheel_joint" type="hinge" axis="0 1 0" damping="0.002"/>
+                <joint name="left_wheel_joint" type="hinge" axis="0 1 0" damping="0.005"/>
                 <geom name="left_wheel_geom" type="cylinder" size="0.031 0.005" rgba="0.2 0.2 0.2 1" zaxis="0 1 0" friction="2.0 0.005 0.0001"/>
             </body>
 
             <body name="right_wheel" pos="-0.02 -0.0525 0.031">
-                <joint name="right_wheel_joint" type="hinge" axis="0 1 0" damping="0.002"/>
+                <joint name="right_wheel_joint" type="hinge" axis="0 1 0" damping="0.005"/>
                 <geom name="right_wheel_geom" type="cylinder" size="0.031 0.005" rgba="0.2 0.2 0.2 1" zaxis="0 1 0" friction="2.0 0.005 0.0001"/>
             </body>
 
             <body name="castor_wheel" pos="0.04 0 0.01">
                 <joint name="castor_joint" type="ball"/>
                 <geom name="castor_geom" type="sphere" size="0.01" rgba="0.5 0.5 0.5 1" friction="0.005 0.005 0.0001"/>
+            </body>
+
+            <!-- add a directional arrow to indicate the front of the robot -->
+            <body name="direction_arrow" pos="0.02 0 0.08">
+                <geom name="arrow_geom" type="cylinder" size="0.01 0.02" rgba="0.4 0.9 0.1 1" zaxis="1 0 0"/>
             </body>
 
             <!-- 30 LiDAR rangefinder sites, evenly spaced every 12 degrees -->

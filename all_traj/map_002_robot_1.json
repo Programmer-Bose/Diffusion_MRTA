@@ -1,0 +1,80 @@
+{
+    "robot_metadata": {
+        "map_number": 2,
+        "robot_number": 1,
+        "size": [
+            800,
+            800
+        ],
+        "num_obstacles": 7,
+        "num_tasks": 0
+    },
+    "start_position": [
+        393,
+        414
+    ],
+    "goal_position": [
+        523,
+        172
+    ],
+    "task_points": {},
+    "task_sequence": [],
+    "obstacles": [
+        {
+            "type": "circle",
+            "position": [
+                294,
+                417
+            ],
+            "radius": 40
+        },
+        {
+            "type": "circle",
+            "position": [
+                614,
+                229
+            ],
+            "radius": 40
+        },
+        {
+            "type": "circle",
+            "position": [
+                494,
+                425
+            ],
+            "radius": 40
+        },
+        {
+            "type": "circle",
+            "position": [
+                493,
+                281
+            ],
+            "radius": 40
+        },
+        {
+            "type": "circle",
+            "position": [
+                385,
+                523
+            ],
+            "radius": 40
+        },
+        {
+            "type": "circle",
+            "position": [
+                375,
+                257
+            ],
+            "radius": 40
+        },
+        {
+            "type": "circle",
+            "position": [
+                321,
+                107
+            ],
+            "radius": 40
+        }
+    ]
+}
